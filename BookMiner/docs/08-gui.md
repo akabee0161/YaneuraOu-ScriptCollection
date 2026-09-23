@@ -16,6 +16,12 @@ Windows で `py` ランチャーを使っている場合は、次のように起
 py BookMiner-gui.py
 ```
 
+venv に `cshogi` / `json5` をインストールしている場合は、その venv の python で起動してください。GUI は `sys.executable` で `BookMiner.py` を子プロセスとして起動するため、GUI を venv の python で起動すれば BookMiner.py も同じ venv で動きます。
+
+```bash
+../venv/bin/python BookMiner-gui.py
+```
+
 GUI は `BookMiner.py` を子プロセスとして起動します。BookMiner.py の内部処理を別実装しているわけではないので、コマンドライン版と同じ定跡 DB、同じ設定ファイル、同じログを使います。
 
 GUI は起動直後に、内部的に `BookMiner.py --from_gui` を自動実行します。このオプションが付いている場合、コマンド入力用のプロンプトはログ欄に出力されません。

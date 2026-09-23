@@ -22,4 +22,10 @@ GUI で操作したい場合は、次のように起動します。
 python3 BookMiner-gui.py
 ```
 
+venv に `cshogi` / `json5` をインストールしている場合は、その venv の python で起動してください（詳細は [8. GUI で操作する](docs/08-gui.md) を参照）。
+
+```bash
+../venv/bin/python BookMiner-gui.py
+```
+
 GUI は `BookMiner.py` を子プロセスとして起動し、既存のコマンドを送信する wrapper です。
