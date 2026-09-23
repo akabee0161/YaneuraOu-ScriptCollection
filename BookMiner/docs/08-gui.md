@@ -265,3 +265,9 @@ GUI がそれぞれの結果を `book/think_sfens-tmp.txt` へ集約し、最後
 DBを保存したい場合は、閉じる前に `DB手動保存` を押してください。
 
 `peta_shock` は時間がかかることがあります。変換中はログ欄に `[peta_shock] running...` のような進捗が表示されます。
+
+### 自動enqueueが高速に回り続けて止められない場合
+
+`peta next` が見つける候補が少ない、あるいは候補のほとんどが既に定跡DBに存在する局面（他ルートからのtransposition）だと、`peta_shock` → `peta next` → `enqueue` の周回が1〜2秒に1回というペースで回り続けることがあります。局面周辺が既に掘り尽くされているサインで、バグではありません。
+
+この状態では、GUIはほぼ常時busyになるため、「自動enqueue」のチェックボックスが無効化されてクリックを受け付けなくなり、**GUI上からは止められません**。止めるには、`BookMiner-gui.py` と `BookMiner.py --from_gui` のプロセスを直接終了する必要があります（例: `pgrep -fa "BookMiner-gui.py|BookMiner.py --from_gui"` でPIDを特定し `kill`）。`peta_shock` のたびに定跡DBは保存されているため、強制終了してもデータはほぼ最新の状態で残ります。
