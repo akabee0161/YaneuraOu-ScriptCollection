@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import cshogi
-from cshogi import KI2
+from cshogi import KI2, KIF
 
 COMMON_LIB_DIR = Path(__file__).resolve().parent.parent / "CommonLib"
 sys.path.insert(0, str(COMMON_LIB_DIR))
@@ -193,3 +193,40 @@ def build_kifu(
         level[0].children = roots
         roots = level
     return KifuTree(make_board(start_sfen), roots, len(builder.expanded), builder.warnings)
+
+
+def header_lines(board: cshogi.Board) -> list[str]:
+    if book_key(board) == BookLib.trim_number(SFEN_START_PLY1):
+        lines = ["手合割：平手"]
+    else:
+        lines = KIF.board_to_bod(board).split("\n")
+    return lines + ["先手：", "後手：", ""]
+
+
+def write_line(lines: list[str], nodes: list[KifuNode], ply: int) -> None:
+    """
+    nodes[0] から本線を辿って書き、その後で途中の分岐を手数の大きい順に書く。
+    ビューアは「変化：N手」を直前に書かれた手順を遡って接続するため、この順序が必要。
+    """
+    branches: list[tuple[int, list[KifuNode]]] = []
+    while nodes:
+        head = nodes[0]
+        lines.append(head.ki2)
+        if head.comment:
+            lines.append("*" + head.comment)
+        if len(nodes) > 1:
+            branches.append((ply, nodes[1:]))
+        nodes = head.children
+        ply += 1
+
+    for branch_ply, alternatives in reversed(branches):
+        for alternative in alternatives:
+            lines.append("")
+            lines.append(f"変化：{branch_ply}手")
+            write_line(lines, [alternative], branch_ply)
+
+
+def render_ki2(tree: KifuTree) -> str:
+    lines = header_lines(tree.start_board)
+    write_line(lines, tree.roots, 1)
+    return "\n".join(lines) + "\n"

@@ -199,5 +199,56 @@ class BuildKifuTest(unittest.TestCase):
             bk.build_kifu({}, "garbage", [])
 
 
+def node(ki2, *children, comment=None):
+    return bk.KifuNode(ki2, comment, list(children))
+
+
+def tree_of(*roots, sfen=None):
+    board = bk.make_board(sfen or bk.SFEN_START_PLY1)
+    return bk.KifuTree(board, list(roots), 0, [])
+
+
+class RenderKi2Test(unittest.TestCase):
+    def test_header_and_comments(self):
+        text = bk.render_ki2(tree_of(node("▲７六歩", comment="評価値 +50 depth 0")))
+        self.assertEqual(text, "手合割：平手\n先手：\n後手：\n\n▲７六歩\n*評価値 +50 depth 0\n")
+
+    def test_variations_are_written_deepest_first(self):
+        # 本線 A-B-C、2手目に B2/B3、1手目に A2(その先 X とその変化 X2)
+        roots = [
+            node("A", node("B", node("C")), node("B2"), node("B3")),
+            node("A2", node("X"), node("X2")),
+        ]
+        text = bk.render_ki2(tree_of(*roots))
+        body = text.split("\n\n", 1)[1]
+        self.assertEqual(body, "\n".join([
+            "A", "B", "C",
+            "", "変化：2手", "B2",
+            "", "変化：2手", "B3",
+            "", "変化：1手", "A2", "X",
+            "", "変化：2手", "X2",
+        ]) + "\n")
+
+    def test_nested_variation_inside_variation(self):
+        # 1手目の変化 A2 の先の 3手目に分岐があるケース
+        roots = [
+            node("A", node("B", node("C"))),
+            node("A2", node("Y", node("Z"), node("Z2"))),
+        ]
+        body = bk.render_ki2(tree_of(*roots)).split("\n\n", 1)[1]
+        self.assertEqual(body, "\n".join([
+            "A", "B", "C",
+            "", "変化：1手", "A2", "Y", "Z",
+            "", "変化：3手", "Z2",
+        ]) + "\n")
+
+    def test_non_startpos_uses_bod(self):
+        sfen = "lnsgkgsnl/1r5b1/ppppppppp/9/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL w - 2"
+        text = bk.render_ki2(tree_of(node("△３四歩"), sfen=sfen))
+        self.assertTrue(text.startswith("後手の持駒："))
+        self.assertIn("後手番\n先手：\n後手：\n\n△３四歩\n", text)
+        self.assertNotIn("手合割", text)
+
+
 if __name__ == "__main__":
     unittest.main()
