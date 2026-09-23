@@ -1,5 +1,6 @@
 import contextlib
 import io
+import os
 import sys
 import tempfile
 import unittest
@@ -262,6 +263,60 @@ sfen lnsgkgsnl/1r5b1/ppppppppp/9/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL w - 2
 """
 
 
+class FindLatestBookTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_prefers_peta_book_over_book_miner(self):
+        (self.dir / "book_miner-20260923093633_77.db").touch()
+        (self.dir / "peta_book-20260923093152_35.db").touch()
+        (self.dir / "peta_book-20260923124745_9812.db").touch()
+        self.assertEqual(
+            bk.find_latest_book(self.dir),
+            self.dir / "peta_book-20260923124745_9812.db",
+        )
+
+    def test_falls_back_to_book_miner_when_no_peta_book(self):
+        (self.dir / "book_miner-20260923093152_35.db").touch()
+        (self.dir / "book_miner-20260923093633_77.db").touch()
+        self.assertEqual(
+            bk.find_latest_book(self.dir),
+            self.dir / "book_miner-20260923093633_77.db",
+        )
+
+    def test_raises_when_directory_has_no_book(self):
+        with self.assertRaises(ValueError):
+            bk.find_latest_book(self.dir)
+
+    def test_raises_when_directory_missing(self):
+        with self.assertRaises(ValueError):
+            bk.find_latest_book(self.dir / "no-such-dir")
+
+
+class DefaultRootTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / "peta_start_sfens.txt"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_missing_file_is_startpos(self):
+        self.assertEqual(bk.default_root(self.path), "startpos")
+
+    def test_first_nonblank_line_is_used(self):
+        self.path.write_text("\nstartpos moves 7g7f 3c3d\nstartpos moves 2g2f\n", encoding="utf-8")
+        self.assertEqual(bk.default_root(self.path), "startpos moves 7g7f 3c3d")
+
+    def test_blank_file_is_startpos(self):
+        self.path.write_text("\n\n", encoding="utf-8")
+        self.assertEqual(bk.default_root(self.path), "startpos")
+
+
 class MainTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -313,6 +368,21 @@ class MainTest(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
             bk.main(["--book", str(self.book), "--output", str(self.out), "--max-depth", "0"])
         self.assertEqual(cm.exception.code, 2)
+
+    def test_all_args_omitted_uses_defaults(self):
+        cwd = Path.cwd()
+        os.chdir(self.dir)
+        try:
+            (self.dir / "book/backup").mkdir(parents=True)
+            (self.dir / "book/backup/book_miner-20260923093152_35.db").write_text(DB_TEXT, encoding="utf-8")
+            (self.dir / "book/peta_start_sfens.txt").write_text("startpos moves 7g7f\n", encoding="utf-8")
+            code, out, _ = self.run_main()
+        finally:
+            os.chdir(cwd)
+        self.assertEqual(code, 0)
+        written = (self.dir / "book/kif/exported.ki2").read_text(encoding="cp932")
+        self.assertIn("▲７六歩\n*評価値 +50 depth 1\n△３四歩\n", written)
+        self.assertIn("3 moves, 2/2 positions", out)
 
 
 if __name__ == "__main__":

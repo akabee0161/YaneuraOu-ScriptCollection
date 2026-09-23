@@ -244,22 +244,58 @@ def positive_int(s: str) -> int:
     return value
 
 
+DEFAULT_BACKUP_DIR = Path("book/backup")
+DEFAULT_PETA_START_SFENS_PATH = Path("book/peta_start_sfens.txt")
+DEFAULT_OUTPUT_PATH = Path("book/kif/exported.ki2")
+
+
+def find_latest_book(backup_dir: Path = DEFAULT_BACKUP_DIR) -> Path:
+    """
+    backup_dir から最新の peta_book-*.db を選ぶ。無ければ最新の book_miner-*.db にフォールバックする。
+    ファイル名末尾のタイムスタンプは文字列ソートで新しい順に並ぶ。
+    """
+    for pattern in ("peta_book-*.db", "book_miner-*.db"):
+        matches = sorted(backup_dir.glob(pattern))
+        if matches:
+            return matches[-1]
+    raise ValueError(f"no book_miner-*.db or peta_book-*.db found in {backup_dir} "
+                      "(--book で定跡DBを指定してください)")
+
+
+def default_root(path: Path = DEFAULT_PETA_START_SFENS_PATH) -> str:
+    """path の1行目(空行を除く)を root として使う。無ければ startpos。"""
+    if not path.exists():
+        return "startpos"
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            return line
+    return "startpos"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="定跡DBを変化付きKI2に書き出す")
-    parser.add_argument("--book", required=True, help="定跡DB (.db / .ybb)")
-    parser.add_argument("--output", required=True, help="出力KI2ファイル (cp932)")
-    parser.add_argument("--root", default="startpos",
-                        help="展開開始局面。'startpos moves ...' / 'sfen ... moves ...' (think_sfens.txtの行も可)")
+    parser.add_argument("--book", default=None,
+                        help=f"定跡DB (.db / .ybb)。省略時は {DEFAULT_BACKUP_DIR} 内の最新の "
+                             "peta_book-*.db (無ければ book_miner-*.db) を自動選択")
+    parser.add_argument("--output", default=str(DEFAULT_OUTPUT_PATH),
+                        help=f"出力KI2ファイル (cp932)。省略時は {DEFAULT_OUTPUT_PATH} に上書き")
+    parser.add_argument("--root", default=None,
+                        help="展開開始局面。'startpos moves ...' / 'sfen ... moves ...' (think_sfens.txtの行も可)。"
+                             f"省略時は {DEFAULT_PETA_START_SFENS_PATH} の1行目、無ければ startpos")
     parser.add_argument("--max-depth", type=positive_int, default=None,
                         help="root から出力する定跡手の手数 (省略時は無制限)")
     args = parser.parse_args(argv)
 
     try:
-        start_sfen, prefix_moves = parse_root(args.root)
-        book = BookLib.read_yaneuraou_book(args.book, ignore_book_ply=True)
+        book_path = args.book if args.book is not None else str(find_latest_book())
+        root = args.root if args.root is not None else default_root()
+        start_sfen, prefix_moves = parse_root(root)
+        book = BookLib.read_yaneuraou_book(book_path, ignore_book_ply=True)
         tree = build_kifu(book, start_sfen, prefix_moves, args.max_depth)
         text = render_ki2(tree)
-        Path(args.output).write_text(text, encoding="cp932")
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(text, encoding="cp932")
     except (ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
