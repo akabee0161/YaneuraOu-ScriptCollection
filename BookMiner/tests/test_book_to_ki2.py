@@ -1,4 +1,7 @@
+import contextlib
+import io
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -248,6 +251,68 @@ class RenderKi2Test(unittest.TestCase):
         self.assertTrue(text.startswith("後手の持駒："))
         self.assertIn("後手番\n先手：\n後手：\n\n△３四歩\n", text)
         self.assertNotIn("手合割", text)
+
+
+DB_TEXT = """#YANEURAOU-DB2016 1.00
+sfen lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1
+7g7f none 50 1 1
+2g2f none 40 0 1
+sfen lnsgkgsnl/1r5b1/ppppppppp/9/9/2P6/PP1PPPPPP/1B5R1/LNSGKGSNL w - 2
+3c3d none -50 0 1
+"""
+
+
+class MainTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.book = self.dir / "book.db"
+        self.book.write_text(DB_TEXT, encoding="utf-8")
+        self.out = self.dir / "out.ki2"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_main(self, *args):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = bk.main(list(args))
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_writes_cp932_ki2(self):
+        code, out, _ = self.run_main("--book", str(self.book), "--output", str(self.out))
+        self.assertEqual(code, 0)
+        text = self.out.read_text(encoding="cp932")
+        self.assertIn("▲７六歩\n*評価値 +50 depth 1\n△３四歩\n", text)
+        self.assertIn("変化：1手\n▲２六歩\n", text)
+        self.assertIn("3 moves, 2/2 positions", out)
+
+    def test_unreachable_positions_are_reported(self):
+        orphan = "sfen lnsgkgsnl/1r5b1/ppppppppp/9/9/6P2/PPPPPP1PP/1B5R1/LNSGKGSNL w - 2\n8c8d none 0 0 1\n"
+        self.book.write_text(DB_TEXT + orphan, encoding="utf-8")
+        code, out, err = self.run_main("--book", str(self.book), "--output", str(self.out))
+        self.assertEqual(code, 0)
+        self.assertIn("3 moves, 2/3 positions", out)
+        self.assertIn("note: 1 positions in the book are not reachable from root", err)
+
+    def test_root_not_in_book_is_error(self):
+        code, _, err = self.run_main(
+            "--book", str(self.book), "--output", str(self.out),
+            "--root", "sfen lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL w - 1",
+        )
+        self.assertEqual(code, 1)
+        self.assertTrue(err.startswith("error: no position on the root line is in the book"))
+        self.assertFalse(self.out.exists())
+
+    def test_missing_book_is_error(self):
+        code, _, err = self.run_main("--book", str(self.dir / "nope.db"), "--output", str(self.out))
+        self.assertEqual(code, 1)
+        self.assertTrue(err.startswith("error: "))
+
+    def test_max_depth_must_be_positive(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
+            bk.main(["--book", str(self.book), "--output", str(self.out), "--max-depth", "0"])
+        self.assertEqual(cm.exception.code, 2)
 
 
 if __name__ == "__main__":

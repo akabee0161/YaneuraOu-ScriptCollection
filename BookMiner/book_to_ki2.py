@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import argparse
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -230,3 +231,48 @@ def render_ki2(tree: KifuTree) -> str:
     lines = header_lines(tree.start_board)
     write_line(lines, tree.roots, 1)
     return "\n".join(lines) + "\n"
+
+
+def count_moves(nodes: list[KifuNode]) -> int:
+    return sum(1 + count_moves(n.children) for n in nodes)
+
+
+def positive_int(s: str) -> int:
+    value = int(s)
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be >= 1")
+    return value
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="定跡DBを変化付きKI2に書き出す")
+    parser.add_argument("--book", required=True, help="定跡DB (.db / .ybb)")
+    parser.add_argument("--output", required=True, help="出力KI2ファイル (cp932)")
+    parser.add_argument("--root", default="startpos",
+                        help="展開開始局面。'startpos moves ...' / 'sfen ... moves ...' (think_sfens.txtの行も可)")
+    parser.add_argument("--max-depth", type=positive_int, default=None,
+                        help="root から出力する定跡手の手数 (省略時は無制限)")
+    args = parser.parse_args(argv)
+
+    try:
+        start_sfen, prefix_moves = parse_root(args.root)
+        book = BookLib.read_yaneuraou_book(args.book, ignore_book_ply=True)
+        tree = build_kifu(book, start_sfen, prefix_moves, args.max_depth)
+        text = render_ki2(tree)
+        Path(args.output).write_text(text, encoding="cp932")
+    except (ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    for warning in tree.warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+    unreachable = len(book) - tree.positions
+    if unreachable > 0:
+        print(f"note: {unreachable} positions in the book are not reachable from root "
+              "(use --root to start from them)", file=sys.stderr)
+    print(f"wrote {args.output}: {count_moves(tree.roots)} moves, {tree.positions}/{len(book)} positions")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
