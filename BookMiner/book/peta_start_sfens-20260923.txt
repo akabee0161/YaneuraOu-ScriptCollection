@@ -1,0 +1,1 @@
+startpos moves 7g7f 3c3d 2g2f 4c4d 2f2e 2b3c 3i4h 3a3b 5i6h 3b4c 5g5f 8b4b 6h7h 7a7b 4i5h 5a6b 3g3f 6b7a 4h5g 7a8b 9g9f 9c9d 1g1f 1c1d 2i3g 1a1c 4g4f 4a3b 6i6h

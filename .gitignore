@@ -18,6 +18,14 @@ KifManager/tmp/
 KifManager/usi-kif.txt
 BookMiner/BookMiner-gui.pickle
 BookMiner/YO-MATERIAL.exe
+
+# BookMiner/book/ holds generated books, KI2 exports, and working queue
+# files (large, regenerated frequently) — keep out of git. Exception:
+# dated decision-record snapshots (name-YYYYMMDD.txt), which are small
+# and record an intentional choice (e.g. which line to focus mining on).
+!BookMiner/book/
+BookMiner/book/*
+!BookMiner/book/*-20[0-9][0-9][0-9][0-9][0-9][0-9].txt
 YaneuraOu-Builder/source/*.pickle
 makebook/peta_shock-gui.pickle
 
