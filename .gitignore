@@ -18,6 +18,16 @@ KifManager/tmp/
 KifManager/usi-kif.txt
 BookMiner/BookMiner-gui.pickle
 BookMiner/YO-MATERIAL.exe
+
+# BookMiner/book/ holds generated books, KI2 exports, and working queue
+# files (large, regenerated frequently) — keep out of git. Exception:
+# dated peta_start_sfens snapshots (peta_start_sfens-YYYYMMDD.txt), which
+# record which line to focus mining on — a small, intentional decision.
+# think_sfens*.txt is a disposable work order, not a decision record, and
+# stays out even when dated.
+!BookMiner/book/
+BookMiner/book/*
+!BookMiner/book/peta_start_sfens-20[0-9][0-9][0-9][0-9][0-9][0-9].txt
 YaneuraOu-Builder/source/*.pickle
 makebook/peta_shock-gui.pickle
 
