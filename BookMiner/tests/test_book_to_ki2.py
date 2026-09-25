@@ -76,15 +76,31 @@ class BuildKifuTest(unittest.TestCase):
         }
         tree = bk.build_kifu(book, bk.SFEN_START_PLY1, [])
         self.assertEqual(flatten(tree.roots), [
-            ("▲７六歩", "評価値 +50 depth 2", [
-                ("△３四歩", "評価値 +50 depth 1", [
+            ("▲７六歩", "評価値 +50 depth 2\n他候補(未探索): ▲２六歩 +40", [
+                ("△３四歩", "評価値 +50 depth 1\n他候補(未探索): △８四歩 +60", [
                     ("▲２六歩", "評価値 +30 depth 0", []),
                 ]),
-                ("△８四歩", "評価値 +60 depth 0", []),
             ]),
-            ("▲２六歩", "評価値 +40 depth 0", []),
         ])
         self.assertEqual(tree.positions, 3)
+
+    def test_explored_alternative_is_variation(self):
+        book = {
+            key_after(): [bm("7g7f", 50, 1), bm("2g2f", 40, 1)],
+            key_after("2g2f"): [bm("8c8d", -40)],
+        }
+        tree = bk.build_kifu(book, bk.SFEN_START_PLY1, [])
+        self.assertEqual(flatten(tree.roots), [
+            ("▲７六歩", "評価値 +50 depth 1", []),
+            ("▲２六歩", "評価値 +40 depth 1", [("△８四歩", "評価値 +40 depth 0", [])]),
+        ])
+
+    def test_first_candidate_with_depth_0_is_kept_as_move(self):
+        book = {key_after(): [bm("7g7f", 50), bm("2g2f", 40)]}
+        tree = bk.build_kifu(book, bk.SFEN_START_PLY1, [])
+        self.assertEqual(flatten(tree.roots), [
+            ("▲７六歩", "評価値 +50 depth 0\n他候補(未探索): ▲２六歩 +40", []),
+        ])
         self.assertEqual(tree.warnings, [])
 
     def test_white_value_is_black_view(self):
@@ -100,8 +116,7 @@ class BuildKifuTest(unittest.TestCase):
         }
         tree = bk.build_kifu(book, bk.SFEN_START_PLY1, ["7g7f"])
         self.assertEqual(flatten(tree.roots), [
-            ("▲７六歩", "定跡候補外", [("△３四歩", "評価値 +50 depth 0", [])]),
-            ("▲２六歩", "評価値 +40 depth 0", []),
+            ("▲７六歩", "定跡候補外\n他候補(未探索): ▲２六歩 +40", [("△３四歩", "評価値 +50 depth 0", [])]),
         ])
         self.assertEqual(tree.positions, 2)
 
@@ -112,8 +127,7 @@ class BuildKifuTest(unittest.TestCase):
         }
         tree = bk.build_kifu(book, bk.SFEN_START_PLY1, ["7g7f"])
         self.assertEqual(flatten(tree.roots), [
-            ("▲７六歩", "評価値 +30 depth 1", [("△３四歩", "評価値 +30 depth 0", [])]),
-            ("▲２六歩", "評価値 +40 depth 0", []),
+            ("▲７六歩", "評価値 +30 depth 1\n他候補(未探索): ▲２六歩 +40", [("△３四歩", "評価値 +30 depth 0", [])]),
         ])
 
     def test_prefix_position_not_in_book_has_no_comment(self):
@@ -127,24 +141,63 @@ class BuildKifuTest(unittest.TestCase):
         book = {key_after(): [bm("2g2f", 40)]}
         tree = bk.build_kifu(book, bk.SFEN_START_PLY1, ["7g7f"])
         self.assertEqual(flatten(tree.roots), [
-            ("▲７六歩", "定跡候補外", []),
-            ("▲２六歩", "評価値 +40 depth 0", []),
+            ("▲７六歩", "定跡候補外\n他候補(未探索): ▲２六歩 +40", []),
         ])
 
-    def test_alternative_reaching_prefix_position_is_merged(self):
-        # 変化(2g2f 3c3d 7g7f)が、prefix上の局面(7g7f 3c3d 2g2f)に合流する
+    def test_alternative_reaching_prefix_position_is_dropped(self):
+        # 変化(2g2f 3c3d 7g7f)は prefix上の局面(7g7f 3c3d 2g2f)に合流するので、枝ごと出力しない
         book = {
-            key_after(): [bm("7g7f", 50), bm("2g2f", 40)],
-            key_after("2g2f"): [bm("3c3d", -40)],
-            key_after("2g2f", "3c3d"): [bm("7g7f", 40)],
+            key_after(): [bm("7g7f", 50, 3), bm("2g2f", 40, 3)],
+            key_after("2g2f"): [bm("3c3d", -40, 2)],
+            key_after("2g2f", "3c3d"): [bm("7g7f", 40, 1)],
             key_after("7g7f", "3c3d", "2g2f"): [bm("8c8d", -50)],
         }
         tree = bk.build_kifu(book, bk.SFEN_START_PLY1, ["7g7f", "3c3d", "2g2f"])
-        merged = tree.roots[1].children[0].children[0]
-        self.assertEqual(merged.comment, "評価値 +40 depth 0 既出局面に合流")
-        self.assertEqual(merged.children, [])
+        self.assertEqual(len(tree.roots), 1)
         trunk_end = tree.roots[0].children[0].children[0]
         self.assertEqual([n.ki2 for n in trunk_end.children], ["△８四歩"])
+
+    def test_mainline_is_expanded_before_prefix_alternatives(self):
+        # prefix 7g7f の変化 2g2f 3c3d 7g7f が、本線 7g7f 3c3d 2g2f と同じ局面に行き着く。
+        # 本線を先に展開するので、本線は打ち切られず、変化のほうが出力されない。
+        book = {
+            key_after(): [bm("7g7f", 50, 4), bm("2g2f", 40, 4)],
+            key_after("7g7f"): [bm("3c3d", -50, 3)],
+            key_after("7g7f", "3c3d"): [bm("2g2f", 50, 2)],
+            key_after("7g7f", "3c3d", "2g2f"): [bm("8c8d", -50, 1)],
+            key_after("7g7f", "3c3d", "2g2f", "8c8d"): [bm("2f2e", 50)],
+            key_after("2g2f"): [bm("3c3d", -40, 3)],
+            key_after("2g2f", "3c3d"): [bm("7g7f", 40, 2)],
+        }
+        tree = bk.build_kifu(book, bk.SFEN_START_PLY1, ["7g7f"])
+        self.assertEqual(len(tree.roots), 1)
+        line = []
+        nodes = tree.roots
+        while nodes:
+            line.append(nodes[0].ki2)
+            self.assertNotIn("合流", nodes[0].comment)
+            nodes = nodes[0].children
+        self.assertEqual(line, ["▲７六歩", "△３四歩", "▲２六歩", "△８四歩", "▲２五歩"])
+
+    def test_branch_with_new_position_survives_merge_pruning(self):
+        # 変化 2g2f 3c3d の先: 7g7f は合流(出さない)、1g1f は新しい局面(出す)
+        book = {
+            key_after(): [bm("7g7f", 50, 3), bm("2g2f", 40, 3)],
+            key_after("7g7f"): [bm("3c3d", -50, 2)],
+            key_after("7g7f", "3c3d"): [bm("2g2f", 50, 1)],
+            key_after("7g7f", "3c3d", "2g2f"): [bm("8c8d", -50)],
+            key_after("2g2f"): [bm("3c3d", -40, 2)],
+            key_after("2g2f", "3c3d"): [bm("7g7f", 40, 1), bm("1g1f", 30, 1)],
+            key_after("2g2f", "3c3d", "1g1f"): [bm("8c8d", -30)],
+        }
+        tree = bk.build_kifu(book, bk.SFEN_START_PLY1, [])
+        self.assertEqual(flatten(tree.roots[1:]), [
+            ("▲２六歩", "評価値 +40 depth 3", [
+                ("△３四歩", "評価値 +40 depth 2", [
+                    ("▲１六歩", "評価値 +30 depth 1", [("△８四歩", "評価値 +30 depth 0", [])]),
+                ]),
+            ]),
+        ])
 
     def test_max_depth(self):
         book = {
@@ -169,18 +222,15 @@ class BuildKifuTest(unittest.TestCase):
 
     def test_transposition_is_not_repeated(self):
         book = {
-            key_after(): [bm("7g7f", 50), bm("2g2f", 40)],
-            key_after("7g7f"): [bm("3c3d", -50)],
-            key_after("7g7f", "3c3d"): [bm("2g2f", 50)],
+            key_after(): [bm("7g7f", 50, 3), bm("2g2f", 40, 3)],
+            key_after("7g7f"): [bm("3c3d", -50, 2)],
+            key_after("7g7f", "3c3d"): [bm("2g2f", 50, 1)],
             key_after("7g7f", "3c3d", "2g2f"): [bm("8c8d", -50)],
-            key_after("2g2f"): [bm("3c3d", -40)],
-            key_after("2g2f", "3c3d"): [bm("7g7f", 40)],
+            key_after("2g2f"): [bm("3c3d", -40, 2)],
+            key_after("2g2f", "3c3d"): [bm("7g7f", 40, 1)],
         }
         tree = bk.build_kifu(book, bk.SFEN_START_PLY1, [])
-        second = tree.roots[1].children[0].children[0]
-        self.assertEqual(second.ki2, "▲７六歩")
-        self.assertEqual(second.comment, "評価値 +40 depth 0 既出局面に合流")
-        self.assertEqual(second.children, [])
+        self.assertEqual([n.ki2 for n in tree.roots], ["▲７六歩"])
         self.assertEqual(tree.positions, 6)
 
     def test_none_and_illegal_moves_are_skipped(self):
@@ -216,6 +266,10 @@ class RenderKi2Test(unittest.TestCase):
     def test_header_and_comments(self):
         text = bk.render_ki2(tree_of(node("▲７六歩", comment="評価値 +50 depth 0")))
         self.assertEqual(text, "手合割：平手\n先手：\n後手：\n\n▲７六歩\n*評価値 +50 depth 0\n")
+
+    def test_multiline_comment(self):
+        text = bk.render_ki2(tree_of(node("▲７六歩", comment="評価値 +50 depth 1\n他候補(未探索): ▲２六歩 +40")))
+        self.assertTrue(text.endswith("▲７六歩\n*評価値 +50 depth 1\n*他候補(未探索): ▲２六歩 +40\n"))
 
     def test_variations_are_written_deepest_first(self):
         # 本線 A-B-C、2手目に B2/B3、1手目に A2(その先 X とその変化 X2)
@@ -338,16 +392,16 @@ class MainTest(unittest.TestCase):
         code, out, _ = self.run_main("--book", str(self.book), "--output", str(self.out))
         self.assertEqual(code, 0)
         text = self.out.read_text(encoding="cp932")
-        self.assertIn("▲７六歩\n*評価値 +50 depth 1\n△３四歩\n", text)
-        self.assertIn("変化：1手\n▲２六歩\n", text)
-        self.assertIn("3 moves, 2/2 positions", out)
+        self.assertIn("▲７六歩\n*評価値 +50 depth 1\n*他候補(未探索): ▲２六歩 +40\n△３四歩\n", text)
+        self.assertNotIn("変化：", text)
+        self.assertIn("2 moves, 2/2 positions", out)
 
     def test_unreachable_positions_are_reported(self):
         orphan = "sfen lnsgkgsnl/1r5b1/ppppppppp/9/9/6P2/PPPPPP1PP/1B5R1/LNSGKGSNL w - 2\n8c8d none 0 0 1\n"
         self.book.write_text(DB_TEXT + orphan, encoding="utf-8")
         code, out, err = self.run_main("--book", str(self.book), "--output", str(self.out))
         self.assertEqual(code, 0)
-        self.assertIn("3 moves, 2/3 positions", out)
+        self.assertIn("2 moves, 2/3 positions", out)
         self.assertIn("note: 1 positions in the book are not reachable from root", err)
 
     def test_root_not_in_book_is_error(self):
@@ -381,8 +435,8 @@ class MainTest(unittest.TestCase):
             os.chdir(cwd)
         self.assertEqual(code, 0)
         written = (self.dir / "book/kif/exported.ki2").read_text(encoding="cp932")
-        self.assertIn("▲７六歩\n*評価値 +50 depth 1\n△３四歩\n", written)
-        self.assertIn("3 moves, 2/2 positions", out)
+        self.assertIn("▲７六歩\n*評価値 +50 depth 1\n*他候補(未探索): ▲２六歩 +40\n△３四歩\n", written)
+        self.assertIn("2 moves, 2/2 positions", out)
 
 
 if __name__ == "__main__":
