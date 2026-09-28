@@ -88,6 +88,10 @@ BOOK_OPPONENT_DIR = os.path.join(BOOK_DIR, "book_opponent")
 # 自動保存の間隔 [s]。settings/book_miner_settings.json5 で上書きされる。
 AUTO_SAVE_INTERVAL = 3 * 60 * 60 # 3時間おき
 
+# book/backup/ に残す book_miner-*.db / peta_book-*.db の世代数(種別ごと)。0なら自動削除しない。
+# settings/book_miner_settings.json5 で上書きされる。
+BACKUP_KEEP_COUNT = 0
+
 # 定跡の最大手数。settings/book_miner_settings.json5 で上書きされる。
 MAX_BOOK_PLY = 200
 
@@ -278,6 +282,9 @@ class CommandDefaults:
 class BookMinerSettings:
     # 自動保存の間隔 [s]
     auto_save_interval_seconds : int = AUTO_SAVE_INTERVAL
+
+    # book/backup/ に残すバックアップの世代数。0なら自動削除しない。
+    backup_keep_count : int = BACKUP_KEEP_COUNT
 
     # この手数に到達したら、それ以上掘らない。
     max_book_ply : int = MAX_BOOK_PLY
@@ -644,6 +651,12 @@ def load_book_miner_settings(path:str = BOOK_MINER_SETTINGS_JSON_PATH)->BookMine
             raise Exception(f"invalid BookMiner setting. {name} must be positive integer. value = {value}")
         return value
 
+    def read_non_negative_int(name:str, current_value:int)->int:
+        value = raw_settings.get(name, current_value)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise Exception(f"invalid BookMiner setting. {name} must be non-negative integer. value = {value}")
+        return value
+
     def read_non_empty_str(name:str, current_value:str)->str:
         value = raw_settings.get(name, current_value)
         if not isinstance(value, str) or not value.strip():
@@ -653,6 +666,10 @@ def load_book_miner_settings(path:str = BOOK_MINER_SETTINGS_JSON_PATH)->BookMine
     settings.auto_save_interval_seconds = read_positive_int(
         "auto_save_interval_seconds",
         settings.auto_save_interval_seconds,
+    )
+    settings.backup_keep_count = read_non_negative_int(
+        "backup_keep_count",
+        settings.backup_keep_count,
     )
     settings.max_book_ply = read_positive_int(
         "max_book_ply",
@@ -666,6 +683,7 @@ def load_book_miner_settings(path:str = BOOK_MINER_SETTINGS_JSON_PATH)->BookMine
     print(
         "BookMiner settings : "
         f"auto_save_interval_seconds = {settings.auto_save_interval_seconds}, "
+        f"backup_keep_count = {settings.backup_keep_count}, "
         f"max_book_ply = {settings.max_book_ply}, "
         f"peta_next_start_sfens_path = {settings.peta_next_start_sfens_path}"
     )
@@ -2836,9 +2854,69 @@ def make_and_read_peta_book(source_book_path:str|None = None):
     """
     最新または指定された通常定跡DBをpeta_shock化し、生成されたpeta_bookを読み込む。
     """
-    source_book_path = resolve_peta_source_book_path(source_book_path)
-    peta_path = run_peta_shock_makebook(source_book_path)
-    read_peta_book(peta_path)
+    # 変換元・変換先を cleanup_old_backups() に消されないよう、読み込み完了まで保持する。
+    with BACKUP_FILES_LOCK:
+        source_book_path = resolve_peta_source_book_path(source_book_path)
+        peta_path = run_peta_shock_makebook(source_book_path)
+        read_peta_book(peta_path)
+
+
+# peta_shock化中とバックアップ削除中に保持するlock
+BACKUP_FILES_LOCK = Lock()
+
+# 自動削除の対象とするバックアップ名。_plyN付き・tmp-*・.ybb・旧形式の book_miner.db は対象外。
+BOOK_BACKUP_CLEANUP_PATTERN = re.compile(rf"^{re.escape(BOOK_DB_NAME)}-\d{{14}}_\d+\.db$")
+PETA_BOOK_CLEANUP_PATTERN = re.compile(rf"^{re.escape(PETA_BOOK_DB_NAME)}-\d{{14}}(?:_\d+)?\.db$")
+
+
+def cleanup_old_backups(
+    keep_count:int,
+    protected_paths:list[str|None],
+    backup_dir:str = BOOK_BACKUP_DIR,
+)->list[str]:
+    """
+    book/backup/ の book_miner-*.db と peta_book-*.db を、種別ごとに新しい順で keep_count 個だけ残して削除する。
+    protected_paths に含まれるファイルは件数に関係なく残す。
+    keep_count が0なら何もしない。peta_shock化の実行中は削除をスキップする。
+    削除したpathのlistを返す。
+    """
+    if keep_count <= 0 or not os.path.isdir(backup_dir):
+        return []
+
+    if not BACKUP_FILES_LOCK.acquire(blocking=False):
+        print("[BackupCleanupSkipped] reason=peta_shock is running")
+        return []
+
+    try:
+        protected = {
+            os.path.abspath(path)
+            for path in protected_paths
+            if path is not None
+        }
+        filenames = sorted(os.listdir(backup_dir))
+        removed : list[str] = []
+
+        for pattern in (BOOK_BACKUP_CLEANUP_PATTERN, PETA_BOOK_CLEANUP_PATTERN):
+            paths = [
+                os.path.join(backup_dir, filename)
+                for filename in filenames
+                if pattern.fullmatch(filename)
+            ]
+            paths = [path for path in paths if os.path.isfile(path)]
+
+            for path in paths[:-keep_count]:
+                if os.path.abspath(path) in protected:
+                    continue
+                try:
+                    os.remove(path)
+                    removed.append(path)
+                    print(f"[BackupCleanupRemoved] path={path}")
+                except OSError as exc:
+                    print(f"Warning : failed to remove old backup. path = {path}, error = {exc}")
+
+        return removed
+    finally:
+        BACKUP_FILES_LOCK.release()
 
 
 def write_and_read_peta_book(book:Book, reset_auto_backup_timer:Callable[[], None]|None = None):
@@ -4081,6 +4159,18 @@ def user_input(from_gui:bool = False):
         nonlocal book
         save_book_backup(book, BOOK_BACKUP_DIR)
 
+    def cleanup_backups():
+        # p コマンドが再利用する通常bookと、読み込み中の peta_book は消さない。
+        with book.lock:
+            clean_source_path = book.clean_source_path
+        try:
+            cleanup_old_backups(
+                book_miner_settings.backup_keep_count,
+                [clean_source_path, peta_book_probe_path],
+            )
+        except Exception as exc:
+            print(f"Warning : backup cleanup failed. error = {exc}")
+
     backup_condition = Condition()
     next_backup_timestamp = time.time() + book_miner_settings.auto_save_interval_seconds
 
@@ -4114,6 +4204,7 @@ def user_input(from_gui:bool = False):
             print("[BackupStart]")
             save_book_backup(book, BOOK_BACKUP_DIR)
             print("[BackupDone]")
+            cleanup_backups()
             reset_auto_backup_timer()
 
     # backup用のタスクを開始。
@@ -4188,6 +4279,7 @@ def user_input(from_gui:bool = False):
                     reset_auto_backup_timer()
                 path = write_to_yaneuraou_book(book, BOOK_BACKUP_DIR, ply_limit)
                 print(f"[ManualBackupDone] path={path}")
+                cleanup_backups()
 
             elif i == 'sd' or i == 'set-default':
                 if len(inp) != 6:
@@ -4294,6 +4386,7 @@ def user_input(from_gui:bool = False):
             elif i == 'p':
                 # write and peta_read
                 write_and_read_peta_book(book, reset_auto_backup_timer)
+                cleanup_backups()
 
             elif i == 'pl' or i == 'peta_shock_latest':
                 # latest regular backup -> peta_read
@@ -4301,6 +4394,7 @@ def user_input(from_gui:bool = False):
                 make_and_read_peta_book(None)
                 print("..pl command has done.")
                 print("[PetaCommandDone]")
+                cleanup_backups()
             
             elif i == 'pn':
                 # peta_next

@@ -192,6 +192,7 @@ settings/book_miner_settings.json5
 各項目の意味は次の通りです。
 
 - `auto_save_interval_seconds` : 定期自動バックアップの間隔です。単位は秒です。
+- `backup_keep_count` : `book/backup/` に残すバックアップの世代数です。省略時は `0`（自動削除しない）です。詳しくは [7. バックアップと復旧](07-backup-and-recovery.md) を参照してください。
 - `max_book_ply` : この手数に到達したら、それ以上局面を掘りません。
 - `peta_next_start_sfens_path` : `pn` / `pr` コマンドで使う開始局面集合ファイルです。
 

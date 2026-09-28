@@ -3,6 +3,11 @@
     // 10800 = 3時間。
     auto_save_interval_seconds: 10800,
 
+    // book/backup/ に残す book_miner-*.db / peta_book-*.db の世代数(種別ごと)。
+    // 自動保存・w・p・pl の後に、これより古いものを自動削除する。
+    // 0 なら自動削除しない。
+    backup_keep_count: 0,
+
     // この手数に到達したら、それ以上局面を掘らない。
     // nコマンドでも、この手数以降の局面は次の掘削対象として書き出さない。
     max_book_ply: 200,
