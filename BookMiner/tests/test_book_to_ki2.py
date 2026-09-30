@@ -200,6 +200,48 @@ class BuildKifuTest(unittest.TestCase):
             ]),
         ])
 
+    def test_position_is_placed_at_shortest_ply(self):
+        # 局面P(7g7f 3c3d 2g2f)には、玉の往復で2手損する遠回り(7手)と最短(3手)の2通りで行き着く。
+        # 遠回りを先に辿っても、Pとその先は最短手数の位置に出し、合流だけの遠回りの枝は出さない。
+        detour = ["7g7f", "3c3d", "5i5h", "5a5b", "2g2f", "5b5a", "5h5i"]
+        book = {
+            key_after(): [bm("7g7f", 50, 3)],
+            key_after("7g7f"): [bm("3c3d", -50, 2)],
+            key_after("7g7f", "3c3d"): [bm("1g1f", 50), bm("5i5h", 40, 6), bm("2g2f", 30, 2)],
+            key_after("7g7f", "3c3d", "2g2f"): [bm("8c8d", -30)],
+        }
+        for i in range(3, len(detour)):
+            book[key_after(*detour[:i])] = [bm(detour[i], 40, len(detour) - i)]
+        tree = bk.build_kifu(book, bk.SFEN_START_PLY1, [])
+        self.assertEqual(flatten(tree.roots), [
+            ("▲７六歩", "評価値 +50 depth 3", [
+                ("△３四歩", "評価値 +50 depth 2", [
+                    ("▲１六歩", "評価値 +50 depth 0", []),
+                    ("▲２六歩", "評価値 +30 depth 2", [("△８四歩", "評価値 +30 depth 0", [])]),
+                ]),
+            ]),
+        ])
+
+    def test_mainline_detour_is_kept_even_if_shorter_route_exists(self):
+        # 本線が遠回り(7手)でPに行き着く場合は、変化の最短ルート(3手)より本線を優先する
+        detour = ["7g7f", "3c3d", "5i5h", "5a5b", "2g2f", "5b5a", "5h5i"]
+        book = {
+            key_after(): [bm("7g7f", 50, 8)],
+            key_after("7g7f"): [bm("3c3d", -50, 7)],
+            key_after("7g7f", "3c3d"): [bm("5i5h", 50, 6), bm("2g2f", 30, 2)],
+            key_after("7g7f", "3c3d", "2g2f"): [bm("8c8d", -50)],
+        }
+        for i in range(3, len(detour)):
+            book[key_after(*detour[:i])] = [bm(detour[i], 50, len(detour) - i)]
+        tree = bk.build_kifu(book, bk.SFEN_START_PLY1, [])
+        line = []
+        nodes = tree.roots
+        while nodes:
+            self.assertEqual(len(nodes), 1)
+            line.append(nodes[0].ki2)
+            nodes = nodes[0].children
+        self.assertEqual(line, ["▲７六歩", "△３四歩", "▲５八玉", "△５二玉", "▲２六歩", "△５一玉", "▲５九玉", "△８四歩"])
+
     def test_max_depth(self):
         book = {
             key_after(): [bm("7g7f", 50)],

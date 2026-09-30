@@ -3,7 +3,8 @@
 
 各局面の先頭候補(best)を本線、2番目以降の候補を変化として出力する。
 未探索(depth 0)の2番目以降の候補は変化にせず、本線の手のコメントに列挙する。
-既出局面に合流するだけの変化は出力しない。
+各局面は開始局面からの最短手数の位置に1回だけ出力し(本線上の局面は本線の位置)、
+それ以外の位置で合流するだけの変化は出力しない。
 仕様: docs/superpowers/specs/2026-09-23-book-to-ki2-design.md
 """
 from __future__ import annotations
@@ -107,14 +108,22 @@ def add_unexplored(node: KifuNode, unexplored: list[str]) -> None:
 class BookTreeBuilder:
     """
     board を push/pop しながら定跡DBを DFS し、KifuNode 木を作る。
-    先頭候補から深く潜るので、合流局面は本線寄りの手順で先に展開される。
-    既出局面に合流する手と、その先が合流だけの手は木に入れない。
+    局面は plies が示す手数の位置でだけ展開する。同じ手数で複数の手順から行き着く局面は、
+    先頭候補から深く潜る順で先に辿った手順で展開する。
+    それ以外の位置で合流する手と、その先が合流だけの手は木に入れない。
     """
 
-    def __init__(self, book: dict[str, list[BookLib.BookMove]], board: cshogi.Board, max_depth: int | None):
+    def __init__(
+        self,
+        book: dict[str, list[BookLib.BookMove]],
+        board: cshogi.Board,
+        max_depth: int | None,
+        plies: dict[str, int],
+    ):
         self.book = book
         self.board = board
         self.max_depth = max_depth
+        self.plies = plies
         self.expanded: set[str] = set()
         self.warnings: list[str] = []
 
@@ -131,6 +140,7 @@ class BookTreeBuilder:
         unexplored: list[str] = []
         dropped_merge = False
         is_main = skip_move is None
+        ply = self.plies[book_key(board)]
         for book_move in self.book.get(book_key(board), []):
             if book_move.move in ("none", skip_move):
                 continue
@@ -152,7 +162,7 @@ class BookTreeBuilder:
             keep = True
             if child_key in path:
                 node.comment += " 循環のため打ち切り"
-            elif child_key in self.expanded:
+            elif child_key in self.expanded or self.plies.get(child_key, ply + 1) != ply + 1:
                 keep = False
             elif self.max_depth is None or depth + 1 < self.max_depth:
                 children = self.expand(depth + 1, path | {child_key})
@@ -178,6 +188,70 @@ class BookTreeBuilder:
             return None if dropped_merge else []
         add_unexplored(nodes[0], unexplored)
         return nodes
+
+
+def mainline_moves(
+    book: dict[str, list[BookLib.BookMove]], board: cshogi.Board, line_keys: set[str]
+) -> list[int]:
+    """board から先頭候補を辿った本線の手。candidates() が本線として展開する手順と一致させる。"""
+    moves: list[int] = []
+    seen = set(line_keys)
+    while True:
+        move = next(
+            (m for m in (usi_to_move(board, bm.move) for bm in book.get(book_key(board), [])
+                         if bm.move != "none") if m is not None),
+            None,
+        )
+        if move is None:
+            break
+        board.push(move)
+        moves.append(move)
+        key = book_key(board)
+        if key not in book or key in seen:
+            break
+        seen.add(key)
+    for _ in moves:
+        board.pop()
+    return moves
+
+
+def placement_plies(
+    book: dict[str, list[BookLib.BookMove]], start_sfen: str, line: list[int]
+) -> dict[str, int]:
+    """
+    各局面を開始局面から何手目の位置に出力するか。
+    line(prefix + 本線)上の局面はその手数に固定し、それ以外はDBの手で辿った最短手数とする。
+    """
+    board = make_board(start_sfen)
+    plies: dict[str, int] = {}
+    levels: list[list[str]] = []
+    for ply in range(len(line) + 1):
+        key = book_key(board)
+        levels.append([])
+        if key not in plies:
+            plies[key] = ply
+            levels[ply].append(board.sfen())
+        if ply < len(line):
+            board.push(line[ply])
+
+    ply = 0
+    while ply < len(levels):
+        for sfen in levels[ply]:
+            board = make_board(sfen)
+            for book_move in book.get(book_key(board), []):
+                move = None if book_move.move == "none" else usi_to_move(board, book_move.move)
+                if move is None:
+                    continue
+                board.push(move)
+                key = book_key(board)
+                if key in book and key not in plies:
+                    plies[key] = ply + 1
+                    if ply + 1 == len(levels):
+                        levels.append([])
+                    levels[ply + 1].append(board.sfen())
+                board.pop()
+        ply += 1
+    return plies
 
 
 def build_kifu(
@@ -208,7 +282,11 @@ def build_kifu(
             "(--root で定跡DBに含まれる局面を指定してください)"
         )
 
-    builder = BookTreeBuilder(book, make_board(start_sfen), max_depth)
+    # 本線上の局面を本線の位置に固定してから、他の局面の出力位置(最短手数)を決める
+    mainline = mainline_moves(book, board, set(line_keys))
+    plies = placement_plies(book, start_sfen, moves + mainline)
+
+    builder = BookTreeBuilder(book, make_board(start_sfen), max_depth, plies)
     # prefix 上の局面は本線で表示されるので、変化側から到達したら合流扱いにする
     builder.expanded.update(key for key in line_keys if key in book)
     board = builder.board
@@ -297,7 +375,7 @@ DEFAULT_PETA_START_SFENS_PATH = Path("book/peta_start_sfens.txt")
 DEFAULT_OUTPUT_PATH = Path("book/kif/exported.ki2")
 
 # 木の構築(expand/candidates)と出力(write_line/count_moves)は手数に比例して再帰する。
-# 約54万局面のDBで手順は600手を超え、既定の上限(1000)では足りない。
+# 手数は局面の最短手数で頭打ちになるが、DBや本線次第で既定の上限(1000)を超えうるので余裕を持たせる。
 RECURSION_LIMIT = 100_000
 
 
