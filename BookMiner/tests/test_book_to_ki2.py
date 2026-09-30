@@ -1,4 +1,5 @@
 import contextlib
+import inspect
 import io
 import os
 import sys
@@ -422,6 +423,37 @@ class MainTest(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
             bk.main(["--book", str(self.book), "--output", str(self.out), "--max-depth", "0"])
         self.assertEqual(cm.exception.code, 2)
+
+    def test_long_line_does_not_hit_recursion_limit(self):
+        # 定跡の手順が長いと DFS が再帰上限を超える。手数を増やす代わりに上限を下げて再現する。
+        plies = 100
+        board = cshogi.Board()
+        seen = {bk.book_key(board)}
+        lines = ["#YANEURAOU-DB2016 1.00"]
+        for i in range(plies):
+            # 既出局面に戻らず、詰まない手を順に選んで重複のない一本道を作る
+            for move in board.legal_moves:
+                board.push(move)
+                key = bk.book_key(board)
+                ok = key not in seen and not board.is_game_over()
+                board.pop()
+                if ok:
+                    break
+            lines += [f"sfen {board.sfen()}", f"{cshogi.move_to_usi(move)} none 0 {plies - 1 - i} 1"]
+            board.push(move)
+            seen.add(key)
+        self.book.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        limit = sys.getrecursionlimit()
+        sys.setrecursionlimit(len(inspect.stack()) + plies)
+        try:
+            code, out, _ = self.run_main(
+                "--book", str(self.book), "--output", str(self.out), "--root", "startpos"
+            )
+        finally:
+            sys.setrecursionlimit(limit)
+        self.assertEqual(code, 0)
+        self.assertIn(f"{plies} moves, {plies}/{plies} positions", out)
 
     def test_all_args_omitted_uses_defaults(self):
         cwd = Path.cwd()

@@ -296,6 +296,10 @@ DEFAULT_BACKUP_DIR = Path("book/backup")
 DEFAULT_PETA_START_SFENS_PATH = Path("book/peta_start_sfens.txt")
 DEFAULT_OUTPUT_PATH = Path("book/kif/exported.ki2")
 
+# 木の構築(expand/candidates)と出力(write_line/count_moves)は手数に比例して再帰する。
+# 約54万局面のDBで手順は600手を超え、既定の上限(1000)では足りない。
+RECURSION_LIMIT = 100_000
+
 
 def find_latest_book(backup_dir: Path = DEFAULT_BACKUP_DIR) -> Path:
     """
@@ -333,6 +337,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-depth", type=positive_int, default=None,
                         help="root から出力する定跡手の手数 (省略時は無制限)")
     args = parser.parse_args(argv)
+    sys.setrecursionlimit(max(sys.getrecursionlimit(), RECURSION_LIMIT))
 
     try:
         book_path = args.book if args.book is not None else str(find_latest_book())
