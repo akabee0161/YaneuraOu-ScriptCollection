@@ -181,7 +181,7 @@ class BuildKifuTest(unittest.TestCase):
         self.assertEqual(line, ["▲７六歩", "△３四歩", "▲２六歩", "△８四歩", "▲２五歩"])
 
     def test_branch_with_new_position_survives_merge_pruning(self):
-        # 変化 2g2f 3c3d の先: 7g7f は合流(出さない)、1g1f は新しい局面(出す)
+        # 変化 2g2f 3c3d の先: 7g7f は同手数の合流(続きの場所をコメントして止める)、1g1f は新しい局面(出す)
         book = {
             key_after(): [bm("7g7f", 50, 3), bm("2g2f", 40, 3)],
             key_after("7g7f"): [bm("3c3d", -50, 2)],
@@ -195,10 +195,25 @@ class BuildKifuTest(unittest.TestCase):
         self.assertEqual(flatten(tree.roots[1:]), [
             ("▲２六歩", "評価値 +40 depth 3", [
                 ("△３四歩", "評価値 +40 depth 2", [
+                    ("▲７六歩", "評価値 +40 depth 1\n"
+                     "合流：続き（△８四歩）は、1手目で▲７六歩を選び、以後 △３四歩 ▲２六歩 と進んだ局面にあります（その先1手）", []),
                     ("▲１六歩", "評価値 +30 depth 1", [("△８四歩", "評価値 +30 depth 0", [])]),
                 ]),
             ]),
         ])
+
+    def test_branch_with_only_merges_is_pruned(self):
+        # 同手数の合流しかない枝は、合流の手を出さずに枝ごと削る
+        book = {
+            key_after(): [bm("7g7f", 50, 3), bm("2g2f", 40, 3)],
+            key_after("7g7f"): [bm("3c3d", -50, 2)],
+            key_after("7g7f", "3c3d"): [bm("2g2f", 50, 1)],
+            key_after("7g7f", "3c3d", "2g2f"): [bm("8c8d", -50)],
+            key_after("2g2f"): [bm("3c3d", -40, 2)],
+            key_after("2g2f", "3c3d"): [bm("7g7f", 40, 1)],
+        }
+        tree = bk.build_kifu(book, bk.SFEN_START_PLY1, [])
+        self.assertEqual([n.ki2 for n in tree.roots], ["▲７六歩"])
 
     def test_position_is_placed_at_shortest_ply(self):
         # 局面P(7g7f 3c3d 2g2f)には、玉の往復で2手損する遠回り(7手)と最短(3手)の2通りで行き着く。
@@ -294,6 +309,29 @@ class BuildKifuTest(unittest.TestCase):
     def test_invalid_sfen(self):
         with self.assertRaises(ValueError):
             bk.build_kifu({}, "garbage", [])
+
+
+class LinkMergesTest(unittest.TestCase):
+    def test_merge_comment_shows_path_from_branch_point(self):
+        # A-B-C-D-E-F と A-B-D-C-E: 後者のEに、3手目で分かれたCの手順を案内する
+        # 「その先」は合流先から先頭の手を辿った手数(F G の2手。変化 F2 は数えない)
+        f = bk.KifuNode("F", key="f", children=[bk.KifuNode("G", key="g")])
+        e = bk.KifuNode("E", key="e", children=[f, bk.KifuNode("F2", key="f2")])
+        c = bk.KifuNode("C", key="c", children=[bk.KifuNode("D", key="cd", children=[e])])
+        merge = bk.KifuNode("E", "評価値 +0 depth 1", merge_to="e")
+        d = bk.KifuNode("D", key="d", children=[bk.KifuNode("C", key="dc", children=[merge])])
+        roots = [bk.KifuNode("A", key="a", children=[bk.KifuNode("B", key="b", children=[c, d])])]
+        bk.link_merges(roots)
+        self.assertEqual(merge.comment, "評価値 +0 depth 1\n合流：続き（F）は、3手目でCを選び、以後 D E と進んだ局面にあります（その先2手）")
+
+    def test_merge_into_position_not_in_kifu_is_removed(self):
+        # 合流先が棋譜に無ければ合流の手を取り除き、その手に付いていた未探索候補は次の手に移す
+        merge = bk.KifuNode("M", "評価値 +1 depth 1\n他候補(未探索): X +1", merge_to="gone")
+        other = bk.KifuNode("B", "評価値 +2 depth 0", key="b")
+        a = bk.KifuNode("A", key="a", children=[merge, other])
+        bk.link_merges([a])
+        self.assertEqual(a.children, [other])
+        self.assertEqual(other.comment, "評価値 +2 depth 0\n他候補(未探索): X +1")
 
 
 def node(ki2, *children, comment=None):

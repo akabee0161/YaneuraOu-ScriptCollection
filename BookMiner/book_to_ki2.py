@@ -4,7 +4,8 @@
 各局面の先頭候補(best)を本線、2番目以降の候補を変化として出力する。
 未探索(depth 0)の2番目以降の候補は変化にせず、本線の手のコメントに列挙する。
 各局面は開始局面からの最短手数の位置に1回だけ出力し(本線上の局面は本線の位置)、
-それ以外の位置で合流するだけの変化は出力しない。
+同じ手数で既出局面に合流する手は、続きを読める場所をコメントに書いて止める。
+それ以外の位置で合流する手と、合流するだけの変化は出力しない。
 仕様: docs/superpowers/specs/2026-09-23-book-to-ki2-design.md
 """
 from __future__ import annotations
@@ -55,10 +56,15 @@ def book_key(board: cshogi.Board) -> str:
 
 @dataclass
 class KifuNode:
-    """棋譜木の1手。children[0] が本線、children[1:] が変化。"""
+    """
+    棋譜木の1手。children[0] が本線、children[1:] が変化。
+    key はこの手を指した後の局面。merge_to は同手数の合流の手で、続きが展開されている局面。
+    """
     ki2: str
     comment: str | None = None
     children: list["KifuNode"] = field(default_factory=list)
+    key: str | None = None
+    merge_to: str | None = None
 
 
 @dataclass
@@ -110,6 +116,7 @@ class BookTreeBuilder:
     board を push/pop しながら定跡DBを DFS し、KifuNode 木を作る。
     局面は plies が示す手数の位置でだけ展開する。同じ手数で複数の手順から行き着く局面は、
     先頭候補から深く潜る順で先に辿った手順で展開する。
+    既に同じ手数の位置で展開済みの局面に合流する手は、merge_to 付きの子の無いノードにする。
     それ以外の位置で合流する手と、その先が合流だけの手は木に入れない。
     """
 
@@ -156,14 +163,17 @@ class BookTreeBuilder:
                 continue
             is_main = False
 
-            node = KifuNode(ki2, comment)
             board.push(move)
             child_key = book_key(board)
+            node = KifuNode(ki2, comment, key=child_key)
             keep = True
             if child_key in path:
                 node.comment += " 循環のため打ち切り"
-            elif child_key in self.expanded or self.plies.get(child_key, ply + 1) != ply + 1:
+            elif self.plies.get(child_key, ply + 1) != ply + 1:
                 keep = False
+            elif child_key in self.expanded:
+                node.merge_to = child_key
+                dropped_merge = True
             elif self.max_depth is None or depth + 1 < self.max_depth:
                 children = self.expand(depth + 1, path | {child_key})
                 if children is None:
@@ -178,16 +188,73 @@ class BookTreeBuilder:
         return nodes, unexplored, dropped_merge
 
     def expand(self, depth: int, path: set[str]) -> list[KifuNode] | None:
-        """現局面の子ノード。None は候補がすべて合流で落ち、この局面へ至る手を出す意味がないことを示す。"""
+        """現局面の子ノード。None は候補がすべて合流で、この局面へ至る手を出す意味がないことを示す。"""
         key = book_key(self.board)
         if key not in self.book:
             return []
         self.expanded.add(key)
         nodes, unexplored, dropped_merge = self.candidates(depth, path)
-        if not nodes:
+        if all(node.merge_to is not None for node in nodes):
             return None if dropped_merge else []
         add_unexplored(nodes[0], unexplored)
         return nodes
+
+
+def link_merges(roots: list[KifuNode]) -> None:
+    """
+    合流の手のコメントに、続きが展開されている局面への辿り方(分岐点の手数と、そこからの手順)と、
+    そこから先頭の手を辿って続く手数を書く。
+    合流先が合流で終わる枝として削られて棋譜に無い場合は、合流の手を取り除く。
+    """
+    parents: dict[int, KifuNode | None] = {}
+    placed: dict[str, KifuNode] = {}
+    merges: list[tuple[list[KifuNode], KifuNode]] = []
+    stack: list[tuple[list[KifuNode], KifuNode | None]] = [(roots, None)]
+    while stack:
+        nodes, parent = stack.pop()
+        for node in nodes:
+            parents[id(node)] = parent
+            if node.merge_to is not None:
+                merges.append((nodes, node))
+                continue
+            if node.key is not None:
+                placed.setdefault(node.key, node)
+            stack.append((node.children, node))
+
+    def line_to(node: KifuNode) -> list[KifuNode]:
+        line = []
+        while node is not None:
+            line.append(node)
+            node = parents[id(node)]
+        return line[::-1]
+
+    for siblings, merge in merges:
+        target = placed.get(merge.merge_to)
+        if target is None:
+            index = next(i for i, node in enumerate(siblings) if node is merge)
+            del siblings[index]
+            # 先頭の手に付けていた未探索候補は、新しく先頭になった手に付け直す
+            unexplored = [c for c in (merge.comment or "").split("\n") if c.startswith("他候補(未探索): ")]
+            if index == 0 and siblings and unexplored:
+                siblings[0].comment = "\n".join(filter(None, [siblings[0].comment, *unexplored]))
+            continue
+
+        merge_line, target_line = line_to(merge), line_to(target)
+        branch = 0
+        while merge_line[branch] is target_line[branch]:
+            branch += 1
+        rest = " ".join(node.ki2 for node in target_line[branch + 1:])
+        continuation = f"（{target.children[0].ki2}）" if target.children else ""
+        remaining = 0
+        node = target
+        while node.children:
+            node = node.children[0]
+            remaining += 1
+        guide = (f"合流：続き{continuation}は、{branch + 1}手目で{target_line[branch].ki2}を選び、"
+                 + (f"以後 {rest} と進んだ局面にあります" if rest else "進んだ局面にあります")
+                 + f"（その先{remaining}手）")
+        lines = (merge.comment or "").split("\n")
+        merge.comment = "\n".join(filter(None, [lines[0], guide, *lines[1:]]))
 
 
 def mainline_moves(
@@ -303,14 +370,14 @@ def build_kifu(
 
     path: set[str] = set()
     levels: list[list[KifuNode]] = []
-    for usi, move in zip(prefix_moves, moves):
+    for i, (usi, move) in enumerate(zip(prefix_moves, moves)):
         key = book_key(board)
         path.add(key)
         comment = None
         if key in book:
             book_move = next((m for m in book[key] if m.move == usi), None)
             comment = format_comment(book_move, board.turn) if book_move else "定跡候補外"
-        node = KifuNode(KI2.move_to_ki2(move, board), comment)
+        node = KifuNode(KI2.move_to_ki2(move, board), comment, key=line_keys[i + 1])
         alternatives, unexplored, _ = builder.candidates(0, path, skip_move=usi)
         add_unexplored(node, unexplored)
         levels.append([node] + alternatives)
@@ -319,6 +386,7 @@ def build_kifu(
     for level in reversed(levels):
         level[0].children = roots
         roots = level
+    link_merges(roots)
     return KifuTree(make_board(start_sfen), roots, len(builder.expanded), builder.warnings)
 
 
