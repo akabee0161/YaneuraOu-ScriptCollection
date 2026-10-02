@@ -452,6 +452,55 @@ class DefaultRootTest(unittest.TestCase):
         self.assertEqual(bk.default_root(self.path), "startpos")
 
 
+class RestrictToBestTest(unittest.TestCase):
+    def test_only_side_to_move_positions_keep_first_legal_move(self):
+        book = {
+            key_after(): [bm("none", 0), bm("1a1b", 60), bm("7g7f", 50), bm("2g2f", 40)],
+            key_after("7g7f"): [bm("3c3d", -50), bm("8c8d", -60)],
+        }
+        restricted = bk.restrict_to_best(book, cshogi.BLACK)
+        self.assertEqual([m.move for m in restricted[key_after()]], ["7g7f"])
+        self.assertEqual([m.move for m in restricted[key_after("7g7f")]], ["3c3d", "8c8d"])
+        # 元の DB は変えない
+        self.assertEqual(len(book[key_after()]), 4)
+
+    def test_white(self):
+        book = {
+            key_after(): [bm("7g7f", 50), bm("2g2f", 40)],
+            key_after("7g7f"): [bm("3c3d", -50), bm("8c8d", -60)],
+        }
+        restricted = bk.restrict_to_best(book, cshogi.WHITE)
+        self.assertEqual([m.move for m in restricted[key_after()]], ["7g7f", "2g2f"])
+        self.assertEqual([m.move for m in restricted[key_after("7g7f")]], ["3c3d"])
+
+    def test_kept_move_stays_after_best(self):
+        book = {key_after(): [bm("7g7f", 50), bm("5g5f", 45), bm("2g2f", 40)]}
+        restricted = bk.restrict_to_best(book, cshogi.BLACK, keep={key_after(): "2g2f"})
+        self.assertEqual([m.move for m in restricted[key_after()]], ["7g7f", "2g2f"])
+        restricted = bk.restrict_to_best(book, cshogi.BLACK, keep={key_after(): "7g7f"})
+        self.assertEqual([m.move for m in restricted[key_after()]], ["7g7f"])
+
+    def test_root_line_moves(self):
+        self.assertEqual(bk.root_line_moves(bk.SFEN_START_PLY1, ["7g7f", "3c3d"]),
+                         {key_after(): "7g7f", key_after("7g7f"): "3c3d"})
+        # 不正な手から先は無視する(エラーは build_kifu / collect_positions が出す)
+        self.assertEqual(bk.root_line_moves(bk.SFEN_START_PLY1, ["7g7f", "7g7f"]), {key_after(): "7g7f"})
+
+    def test_position_without_legal_move_keeps_no_candidates(self):
+        book = {key_after(): [bm("none", 0), bm("1a1b", 60)]}
+        self.assertEqual(bk.restrict_to_best(book, cshogi.BLACK)[key_after()], [])
+
+
+class DefaultOutputPathTest(unittest.TestCase):
+    def test_side_suffix(self):
+        self.assertEqual(bk.default_output_path(Path("book/kif/exported.ki2"), None),
+                         Path("book/kif/exported.ki2"))
+        self.assertEqual(bk.default_output_path(Path("book/kif/exported.ki2"), "black"),
+                         Path("book/kif/exported-black.ki2"))
+        self.assertEqual(bk.default_output_path(Path("book/kif/exported.html"), "white"),
+                         Path("book/kif/exported-white.html"))
+
+
 class MainTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -549,6 +598,48 @@ class MainTest(unittest.TestCase):
         written = (self.dir / "book/kif/exported.ki2").read_text(encoding="cp932")
         self.assertIn("▲７六歩\n*評価値 +50 depth 1\n*他候補(未探索): ▲２六歩 +40\n△３四歩\n", written)
         self.assertIn("2 moves, 2/2 positions", out)
+
+    def test_side_keeps_only_best_move_for_that_side(self):
+        code, out, err = self.run_main("--book", str(self.book), "--output", str(self.out),
+                                       "--root", "startpos", "--side", "black")
+        self.assertEqual(code, 0)
+        text = self.out.read_text(encoding="cp932")
+        self.assertIn("▲７六歩\n*評価値 +50 depth 1\n△３四歩\n", text)
+        self.assertNotIn("２六歩", text)
+        self.assertIn("2 moves, 2/2 positions", out)
+        self.assertNotIn("not reachable", err)
+
+    def test_side_keeps_root_move_with_its_value(self):
+        code, _, _ = self.run_main("--book", str(self.book), "--output", str(self.out),
+                                   "--root", "startpos moves 2g2f", "--side", "black")
+        self.assertEqual(code, 0)
+        text = self.out.read_text(encoding="cp932")
+        self.assertIn("▲２六歩\n*評価値 +40 depth 0\n", text)
+        self.assertIn("変化：1手\n▲７六歩\n*評価値 +50 depth 1\n△３四歩\n", text)
+
+    def test_side_not_reachable_note_is_suppressed(self):
+        orphan = "sfen lnsgkgsnl/1r5b1/ppppppppp/9/9/6P2/PPPPPP1PP/1B5R1/LNSGKGSNL w - 2\n8c8d none 0 0 1\n"
+        self.book.write_text(DB_TEXT + orphan, encoding="utf-8")
+        code, _, err = self.run_main("--book", str(self.book), "--output", str(self.out),
+                                     "--root", "startpos", "--side", "white")
+        self.assertEqual(code, 0)
+        self.assertNotIn("not reachable", err)
+
+    def test_invalid_side_is_usage_error(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
+            bk.main(["--book", str(self.book), "--output", str(self.out), "--side", "sente"])
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_default_output_gets_side_suffix(self):
+        cwd = Path.cwd()
+        os.chdir(self.dir)
+        try:
+            code, _, _ = self.run_main("--book", str(self.book), "--root", "startpos", "--side", "black")
+        finally:
+            os.chdir(cwd)
+        self.assertEqual(code, 0)
+        self.assertTrue((self.dir / "book/kif/exported-black.ki2").exists())
+        self.assertFalse((self.dir / "book/kif/exported.ki2").exists())
 
 
 if __name__ == "__main__":

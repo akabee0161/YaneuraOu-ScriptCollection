@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import os
 import re
 import sys
 import tempfile
@@ -151,6 +152,29 @@ class MainTest(unittest.TestCase):
                               "--output", str(Path(d) / "x.html")])
             self.assertEqual(rc, 1)
             self.assertIn("no book positions at ply 5", stderr.getvalue())
+
+    def test_side_keeps_only_best_move_for_that_side(self):
+        with tempfile.TemporaryDirectory() as d:
+            book_path = Path(d) / "book.db"
+            book_path.write_text(
+                "#YANEURAOU-DB2016 1.00\n"
+                f"sfen {key_after()} 1\n7g7f none 50 2 1\n2g2f none 40 2 1\n"
+                f"sfen {key_after('7g7f')} 2\n3c3d none -50 1 1\n8c8d none -60 1 1\n"
+                f"sfen {key_after('2g2f')} 2\n8c8d none -40 1 1\n",
+                encoding="utf-8",
+            )
+            cwd = Path.cwd()
+            os.chdir(d)
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    rc = bh.main(["--ply", "1", "--book", str(book_path), "--root", "startpos", "--side", "black"])
+            finally:
+                os.chdir(cwd)
+            self.assertEqual(rc, 0)
+            data = embedded_data((Path(d) / "book/kif/exported-black.html").read_text(encoding="utf-8"))
+            # 先手は最善手 ▲７六歩 だけを辿り、後手の候補は全部残る
+            self.assertEqual(len(data["positions"]), 1)
+            self.assertEqual([c[0] for c in data["positions"][0][3]], ["△３四歩", "△８四歩"])
 
 
 if __name__ == "__main__":

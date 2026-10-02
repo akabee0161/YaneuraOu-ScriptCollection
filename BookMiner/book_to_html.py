@@ -6,6 +6,7 @@ root の手順の途中から分かれる局面は含めない。
 各局面の手数は、開始局面から root の手順を進め、その先を定跡DBの手で辿った最短手数
 (book_to_ki2.py と同じく、root の手順と、その先の先頭候補を辿った本線の上の局面は、その位置の手数)とする。
 HTMLにはデータを埋め込むので、外部ファイルやネットワークなしでブラウザで開ける。
+--side を指定すると、その手番の局面では最善手だけを辿る(book_to_ki2.py と同じ)。
 """
 from __future__ import annotations
 
@@ -183,18 +184,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--book", default=None,
                         help=f"定跡DB (.db / .ybb)。省略時は {bk.DEFAULT_BACKUP_DIR} 内の最新の "
                              "peta_book-*.db (無ければ book_miner-*.db) を自動選択")
-    parser.add_argument("--output", default=str(DEFAULT_OUTPUT_PATH),
-                        help=f"出力HTMLファイル (UTF-8)。省略時は {DEFAULT_OUTPUT_PATH} に上書き")
+    parser.add_argument("--output", default=None,
+                        help=f"出力HTMLファイル (UTF-8)。省略時は {DEFAULT_OUTPUT_PATH} に上書き"
+                             "(--side 指定時はファイル名に -black / -white を付ける)")
     parser.add_argument("--root", default=None,
                         help="開始局面と、手数を固定する手順。'startpos moves ...' / 'sfen ... moves ...' "
                              f"(think_sfens.txtの行も可)。省略時は {bk.DEFAULT_PETA_START_SFENS_PATH} の1行目、無ければ startpos")
+    parser.add_argument("--side", choices=bk.SIDES, default=None,
+                        help="black(先手)/white(後手) の手番では最善手だけを辿る (省略時は両者とも全候補)")
     args = parser.parse_args(argv)
+    output = args.output if args.output is not None else str(bk.default_output_path(DEFAULT_OUTPUT_PATH, args.side))
 
     try:
         book_path = args.book if args.book is not None else str(bk.find_latest_book())
         root = args.root if args.root is not None else bk.default_root()
         start_sfen, prefix_moves = bk.parse_root(root)
         book = BookLib.read_yaneuraou_book(book_path, ignore_book_ply=True)
+        if args.side is not None:
+            book = bk.restrict_to_best(book, bk.SIDES[args.side], bk.root_line_moves(start_sfen, prefix_moves))
         entries = collect_positions(book, start_sfen, prefix_moves, args.ply)
         if not entries:
             raise ValueError(f"no book positions at ply {args.ply}")
@@ -204,14 +211,14 @@ def main(argv: list[str] | None = None) -> int:
             "book": Path(book_path).name,
             "generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
         }
-        output_path = Path(args.output)
+        output_path = Path(output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(render_html(entries, meta), encoding="utf-8")
     except (ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    print(f"wrote {args.output}: {len(entries)} positions at ply {args.ply}")
+    print(f"wrote {output}: {len(entries)} positions at ply {args.ply}")
     return 0
 
 

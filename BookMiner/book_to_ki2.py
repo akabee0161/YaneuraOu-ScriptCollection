@@ -6,6 +6,7 @@
 各局面は開始局面からの最短手数の位置に1回だけ出力し(本線上の局面は本線の位置)、
 同じ手数で既出局面に合流する手は、続きを読める場所をコメントに書いて止める。
 それ以外の位置で合流する手と、合流するだけの変化は出力しない。
+--side を指定すると、その手番の局面では最善手だけを辿る。
 仕様: docs/superpowers/specs/2026-09-23-book-to-ki2-design.md
 """
 from __future__ import annotations
@@ -97,6 +98,42 @@ def usi_to_move(board: cshogi.Board, usi: str) -> int | None:
     if not move or not board.is_legal(move):
         return None
     return move
+
+
+SIDES = {"black": cshogi.BLACK, "white": cshogi.WHITE}
+
+
+def root_line_moves(start_sfen: str, prefix_moves: list[str]) -> dict[str, str]:
+    """root の手順の各局面のキーと、そこで指す手。不正な手から先は含めない。"""
+    board = make_board(start_sfen)
+    line: dict[str, str] = {}
+    for usi in prefix_moves:
+        move = usi_to_move(board, usi)
+        if move is None:
+            break
+        line.setdefault(book_key(board), usi)
+        board.push(move)
+    return line
+
+
+def restrict_to_best(
+    book: dict[str, list[BookLib.BookMove]], side: int, keep: dict[str, str] | None = None
+) -> dict[str, list[BookLib.BookMove]]:
+    """
+    side が手番の局面の候補を、先頭の合法手(最善手)1つに減らした定跡DBを返す(元の DB は変えない)。
+    自分が指す側は最善手だけ、相手の応手は全部を見るための絞り込み。
+    keep の局面ではその手も最善手の後ろに残す(root の手順の手の評価値を表示するため)。
+    """
+    keep = keep or {}
+    turn = "b" if side == cshogi.BLACK else "w"
+    restricted = {}
+    for key, book_moves in book.items():
+        if key.split()[1] == turn:
+            board = make_board(key)
+            legal = [bm for bm in book_moves if bm.move != "none" and usi_to_move(board, bm.move) is not None]
+            book_moves = legal[:1] + [bm for bm in legal[1:] if bm.move == keep.get(key)]
+        restricted[key] = book_moves
+    return restricted
 
 
 def format_comment(book_move: BookLib.BookMove, turn: int) -> str:
@@ -447,6 +484,11 @@ DEFAULT_OUTPUT_PATH = Path("book/kif/exported.ki2")
 RECURSION_LIMIT = 100_000
 
 
+def default_output_path(path: Path, side: str | None) -> Path:
+    """--side 指定時の既定の出力先は、ファイル名に -black / -white を付ける。"""
+    return path if side is None else path.with_name(f"{path.stem}-{side}{path.suffix}")
+
+
 def find_latest_book(backup_dir: Path = DEFAULT_BACKUP_DIR) -> Path:
     """
     backup_dir から最新の peta_book-*.db を選ぶ。無ければ最新の book_miner-*.db にフォールバックする。
@@ -475,14 +517,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--book", default=None,
                         help=f"定跡DB (.db / .ybb)。省略時は {DEFAULT_BACKUP_DIR} 内の最新の "
                              "peta_book-*.db (無ければ book_miner-*.db) を自動選択")
-    parser.add_argument("--output", default=str(DEFAULT_OUTPUT_PATH),
-                        help=f"出力KI2ファイル (cp932)。省略時は {DEFAULT_OUTPUT_PATH} に上書き")
+    parser.add_argument("--output", default=None,
+                        help=f"出力KI2ファイル (cp932)。省略時は {DEFAULT_OUTPUT_PATH} に上書き"
+                             "(--side 指定時はファイル名に -black / -white を付ける)")
     parser.add_argument("--root", default=None,
                         help="展開開始局面。'startpos moves ...' / 'sfen ... moves ...' (think_sfens.txtの行も可)。"
                              f"省略時は {DEFAULT_PETA_START_SFENS_PATH} の1行目、無ければ startpos")
     parser.add_argument("--max-depth", type=positive_int, default=None,
                         help="root から出力する定跡手の手数 (省略時は無制限)")
+    parser.add_argument("--side", choices=SIDES, default=None,
+                        help="black(先手)/white(後手) の手番では最善手だけを辿る (省略時は両者とも全候補)")
     args = parser.parse_args(argv)
+    output = args.output if args.output is not None else str(default_output_path(DEFAULT_OUTPUT_PATH, args.side))
     sys.setrecursionlimit(max(sys.getrecursionlimit(), RECURSION_LIMIT))
 
     try:
@@ -490,9 +536,11 @@ def main(argv: list[str] | None = None) -> int:
         root = args.root if args.root is not None else default_root()
         start_sfen, prefix_moves = parse_root(root)
         book = BookLib.read_yaneuraou_book(book_path, ignore_book_ply=True)
+        if args.side is not None:
+            book = restrict_to_best(book, SIDES[args.side], root_line_moves(start_sfen, prefix_moves))
         tree = build_kifu(book, start_sfen, prefix_moves, args.max_depth)
         text = render_ki2(tree)
-        output_path = Path(args.output)
+        output_path = Path(output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(text, encoding="cp932")
     except (ValueError, OSError) as exc:
@@ -501,11 +549,12 @@ def main(argv: list[str] | None = None) -> int:
 
     for warning in tree.warnings:
         print(f"warning: {warning}", file=sys.stderr)
+    # --side 指定時は絞り込みで外した局面も辿れなくなるので、root から辿れない局面の案内は出さない
     unreachable = len(book) - tree.positions
-    if unreachable > 0:
+    if unreachable > 0 and args.side is None:
         print(f"note: {unreachable} positions in the book are not reachable from root "
               "(use --root to start from them)", file=sys.stderr)
-    print(f"wrote {args.output}: {count_moves(tree.roots)} moves, {tree.positions}/{len(book)} positions")
+    print(f"wrote {output}: {count_moves(tree.roots)} moves, {tree.positions}/{len(book)} positions")
     return 0
 
 
